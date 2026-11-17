@@ -109,17 +109,35 @@ jobs:
           详细参数与实现原理见仓库中的 `README.md`。
           EOF
 
+          # 1) 先建/更新空壳 Release，不带附件
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在，就地更新附件与说明"
-            gh release upload "$TAG" "$FILE_GUI" "$FILE_CLI" --clobber
-            gh release edit "$TAG" \
-              --title "$TITLE" \
-              --notes-file release_notes.md \
-              --prerelease="$PRERELEASE"
+            echo "Release $TAG 已存在，更新标题与说明"
+            gh release edit "$TAG" --title "$TITLE" --notes-file release_notes.md --prerelease="$PRERELEASE"
           else
-            echo "创建 Release $TAG"
-            gh release create "$TAG" "$FILE_GUI" "$FILE_CLI" \
-              --title "$TITLE" \
-              --notes-file release_notes.md \
-              --prerelease="$PRERELEASE"
+            echo "创建 Release $TAG（空壳，暂不传附件）"
+            gh release create "$TAG" --title "$TITLE" --notes-file release_notes.md --prerelease="$PRERELEASE"
           fi
+
+          # 2) GitHub 新建 Release 后上传服务有几秒同步延迟，等待后再传
+          echo "等待上传服务同步（20 秒）..."
+          sleep 20
+
+          # 3) 逐个上传附件，每个带重试；单个失败不影响 Release 本身
+          upload_asset() {
+            local file="$1"
+            for attempt in 1 2 3 4 5; do
+              echo "上传 $file（第 $attempt 次）..."
+              if gh release upload "$TAG" "$file" --clobber; then
+                echo "成功：$file"
+                return 0
+              fi
+              echo "$file 上传失败，15 秒后重试"
+              sleep 15
+            done
+            echo "错误：$file 上传 5 次均失败"
+            return 1
+          }
+
+          upload_asset "$FILE_GUI"
+          upload_asset "$FILE_CLI"
+          echo "Release $TAG 发布完成：https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG"
