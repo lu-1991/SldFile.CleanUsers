@@ -1,0 +1,125 @@
+name: 云编译并发布
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（如 1.0.0；含 alpha/beta/rc 自动标记为预发布）'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 编译与发布 (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: 规范化版本号
+        id: ver
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $v = $env:VERSION.Trim()
+          $tag = if ($v.StartsWith('v') -or $v.StartsWith('V')) { $v } else { "v$v" }
+          $pre = if ($v -match 'alpha|beta|rc') { 'true' } else { 'false' }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "prerelease=$pre" >> $env:GITHUB_OUTPUT
+          "版本标签: $tag  预发布: $pre"
+
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: 还原依赖
+        run: dotnet restore SldFile.CleanUsers.sln
+
+      - name: 编译解决方案 (Release)
+        run: dotnet build SldFile.CleanUsers.sln -c Release --no-restore
+
+      - name: 发布窗体版 (自包含单文件)
+        run: >-
+          dotnet publish src/Gui/SldFile.CleanUsers.Gui.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o artifacts/窗体版
+
+      - name: 发布命令行版 (自包含单文件)
+        run: >-
+          dotnet publish src/Cli/SldFile.CleanUsers.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o artifacts/命令行版
+
+      - name: 打包 ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "artifacts\窗体版\*" -DestinationPath "SolidWorks用户清理工具-窗体版-win-x64.zip" -Force
+          Compress-Archive -Path "artifacts\命令行版\*" -DestinationPath "SolidWorks用户清理工具-命令行版-win-x64.zip" -Force
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: 云编译产物-win-x64
+          path: |
+            SolidWorks用户清理工具-窗体版-win-x64.zip
+            SolidWorks用户清理工具-命令行版-win-x64.zip
+          if-no-files-found: error
+
+      - name: 发布 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          PRERELEASE: ${{ steps.ver.outputs.prerelease }}
+        run: |
+          FILE_GUI="SolidWorks用户清理工具-窗体版-win-x64.zip"
+          FILE_CLI="SolidWorks用户清理工具-命令行版-win-x64.zip"
+          TITLE="SolidWorks 用户清理工具 $TAG"
+
+          cat > release_notes.md <<'EOF'
+          ## SolidWorks 用户清理工具
+
+          纯 C# 实现，无需安装 SolidWorks 即可清除 `.sldprt / .sldasm / .slddrw`
+          文件中记录的编辑用户名和作者元数据。
+
+          ### 下载
+
+          | 压缩包 | 说明 |
+          |---|---|
+          | `SolidWorks用户清理工具-窗体版-win-x64.zip` | 图形界面，单文件 exe |
+          | `SolidWorks用户清理工具-命令行版-win-x64.zip` | 命令行，单文件 exe |
+
+          两个版本均为 Windows x64 自包含单文件，**拷到任何电脑双击即可运行，无需安装 .NET**。
+
+          ### 用法
+
+          - 窗体版：解压后双击 exe，把文件或文件夹拖进窗口，点「开始清理」。
+          - 命令行版：`SldFile.CleanUsers.exe "D:\交付\模型" --purge -r`
+
+          详细参数与实现原理见仓库中的 `README.md`。
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，就地更新附件与说明"
+            gh release upload "$TAG" "$FILE_GUI" "$FILE_CLI" --clobber
+            gh release edit "$TAG" \
+              --title "$TITLE" \
+              --notes-file release_notes.md \
+              --prerelease="$PRERELEASE"
+          else
+            echo "创建 Release $TAG"
+            gh release create "$TAG" "$FILE_GUI" "$FILE_CLI" \
+              --title "$TITLE" \
+              --notes-file release_notes.md \
+              --prerelease="$PRERELEASE"
+          fi
