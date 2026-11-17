@@ -63,16 +63,16 @@ jobs:
       - name: 打包 ZIP
         shell: pwsh
         run: |
-          Compress-Archive -Path "artifacts\窗体版\*" -DestinationPath "SolidWorks用户清理工具-窗体版-win-x64.zip" -Force
-          Compress-Archive -Path "artifacts\命令行版\*" -DestinationPath "SolidWorks用户清理工具-命令行版-win-x64.zip" -Force
+          Compress-Archive -Path "artifacts\窗体版\*" -DestinationPath "SolidWorks-CleanUsers-GUI-win-x64.zip" -Force
+          Compress-Archive -Path "artifacts\命令行版\*" -DestinationPath "SolidWorks-CleanUsers-CLI-win-x64.zip" -Force
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: 云编译产物-win-x64
           path: |
-            SolidWorks用户清理工具-窗体版-win-x64.zip
-            SolidWorks用户清理工具-命令行版-win-x64.zip
+            SolidWorks-CleanUsers-GUI-win-x64.zip
+            SolidWorks-CleanUsers-CLI-win-x64.zip
           if-no-files-found: error
 
       - name: 发布 Release
@@ -82,8 +82,12 @@ jobs:
           TAG: ${{ steps.ver.outputs.tag }}
           PRERELEASE: ${{ steps.ver.outputs.prerelease }}
         run: |
-          FILE_GUI="SolidWorks用户清理工具-窗体版-win-x64.zip"
-          FILE_CLI="SolidWorks用户清理工具-命令行版-win-x64.zip"
+          # 用 ASCII 文件名上传，规避 Windows Git Bash 传中文参数给 gh 时的编码丢失
+          # （中文名乱码会让两个文件变成同名，互相覆盖）
+          FILE_GUI="SolidWorks-CleanUsers-GUI-win-x64.zip"
+          FILE_CLI="SolidWorks-CleanUsers-CLI-win-x64.zip"
+          DISPLAY_GUI="SolidWorks用户清理工具-窗体版-win-x64.zip"
+          DISPLAY_CLI="SolidWorks用户清理工具-命令行版-win-x64.zip"
           TITLE="SolidWorks 用户清理工具 $TAG"
 
           cat > release_notes.md <<'EOF'
@@ -118,11 +122,19 @@ jobs:
             gh release create "$TAG" --title "$TITLE" --notes-file release_notes.md --prerelease="$PRERELEASE"
           fi
 
-          # 2) GitHub 新建 Release 后上传服务有几秒同步延迟，等待后再传
+          # 2) 清掉该 Release 下的旧附件（重跑时避免残留乱码名或旧包）
+          REL_ID=$(gh release view "$TAG" --json id --jq .id)
+          OLD_ASSETS=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets" --jq '.[].id')
+          for aid in $OLD_ASSETS; do
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${aid}" >/dev/null
+            echo "已删除旧附件：$aid"
+          done
+
+          # 3) GitHub 新建 Release 后上传服务有几秒同步延迟，等待后再传
           echo "等待上传服务同步（20 秒）..."
           sleep 20
 
-          # 3) 逐个上传附件，每个带重试；单个失败不影响 Release 本身
+          # 4) 逐个上传附件，每个带重试；单个失败不影响 Release 本身
           upload_asset() {
             local file="$1"
             for attempt in 1 2 3 4 5; do
@@ -138,6 +150,32 @@ jobs:
             return 1
           }
 
-          upload_asset "$FILE_GUI"
-          upload_asset "$FILE_CLI"
+          upload_asset "$FILE_GUI" || exit 1
+          upload_asset "$FILE_CLI" || exit 1
+
+          # 5) 把附件显示名改成中文
+          #    中文通过 printf 的 UTF-8 字节流 + gh api --input - 传入，
+          #    不经过 gh 命令行参数，避免 Git Bash 的编码丢失
+          rename_asset() {
+            local old="$1" display="$2"
+            local asset_id
+            asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets" \
+              --jq ".[] | select(.name == \"${old}\") | .id")
+            if [ -n "$asset_id" ]; then
+              printf '{"name":"%s"}' "$display" | gh api \
+                --method PATCH "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+                --input - >/dev/null
+              echo "重命名：$old -> $display"
+            fi
+          }
+          rename_asset "$FILE_GUI" "$DISPLAY_GUI"
+          rename_asset "$FILE_CLI" "$DISPLAY_CLI"
+
+          # 6) 校验：必须正好有 2 个 ZIP 附件，否则判失败（防止静默漏传）
+          ASSET_COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets" --jq 'length')
+          echo "当前附件数：$ASSET_COUNT"
+          if [ "$ASSET_COUNT" -lt 2 ]; then
+            echo "错误：附件数量不足 2 个，发布失败"
+            exit 1
+          fi
           echo "Release $TAG 发布完成：https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG"
