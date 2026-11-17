@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>WinExe</OutputType>
+        <TargetFramework>net8.0-windows</TargetFramework>
+        <UseWindowsForms>true</UseWindowsForms>
+        <Nullable>enable</Nullable>
+        <LangVersion>latest</LangVersion>
+        <RootNamespace>SldFile.CleanUsers.Gui</RootNamespace>
+        <AssemblyName>SolidWorks用户清理工具</AssemblyName>
+        <ApplicationManifest>app.manifest</ApplicationManifest>
+        <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+        <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\SldFile\SldFile.csproj" />
+    </ItemGroup>
+
+</Project>
